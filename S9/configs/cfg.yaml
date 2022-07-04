@@ -1,0 +1,21 @@
+output_dir: pytorch-output/cifar10/output
+
+data:
+    name: cifar10
+    data_path: pytorch-output/cifar10/data
+    batch_size: 128
+
+model:
+    name: cifar10
+    
+loss:
+    name: CrossEntropyLoss
+
+    
+optimizer:
+    name: SGD
+    lr: 0.01
+    momentum: 0.9
+
+train:
+    n_epochs: 50
