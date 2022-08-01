@@ -16,7 +16,6 @@ import numpy as np
 import torchvision
 import cv2
 
-
 class CfarTrainer:
     def __init__(self, **kwargs):
         super(CfarTrainer, self).__init__(**kwargs)
@@ -87,19 +86,27 @@ class CfarTrainer:
         return (train_l, train_a)
 
 
-    def gradCamImpl(self, model, test_loader):
-        target_layers = [model.layer4]
+    def gradCamImpl(self, model_test, test_loader, classes):
+        target_layers = [model_test.layer4]
         dataiter = iter(test_loader)
         images, labels = dataiter.next()
         img = torchvision.utils.make_grid(images[0])
         img = img / 2 + 0.5     # unnormalize
         npimg = img.numpy()
         target_img = np.transpose(npimg, (1, 2, 0))
+        fig = plt.figure(figsize=(5, 5))
+        rows = 2
+        columns = 2
+        fig.add_subplot(rows, columns, 1) 
+        # showing image
         plt.imshow(target_img)
+        plt.axis('off')
+        plt.title("rgb_image_"+classes[labels[0]])
+        plt.draw()
 
         dataiter = iter(test_loader)
-        data, labels = dataiter.next()
-        data, labels = data.to(self.device), labels.to(self.device)
+        # data, labels = dataiter.next()
+        data = images.to(self.device)
         
         input_tensor = data[0].unsqueeze(0)
 
@@ -113,7 +120,7 @@ class CfarTrainer:
         # Using the with statement ensures the context is freed, and you can
         # recreate different CAM objects in a loop.
         # cam_algorithm = methods[args.method]
-        with GradCAM(model=model,target_layers=target_layers,use_cuda=1) as cam:
+        with GradCAM(model=model_test,target_layers=target_layers,use_cuda=1) as cam:
             cam.batch_size = 1
             grayscale_cam = cam(input_tensor=input_tensor,targets=targets)
 
@@ -124,7 +131,12 @@ class CfarTrainer:
 
             # cam_image is RGB encoded whereas "cv2.imwrite" requires BGR encoding.
             cam_image = cv2.cvtColor(cam_image, cv2.COLOR_RGB2BGR)
+            fig.add_subplot(rows, columns, 2) 
+            # showing image
             plt.imshow(cam_image)
+            plt.axis('off')
+            plt.title("gradcam_image_"+classes[labels[0]])
+            plt.show()
 
 
 
@@ -162,9 +174,6 @@ class CfarTrainer:
             prev_val_acc = val_acc
             torch.save(self.model, self.output_dir+'/{}'.format('model.pth'))
 
-            if use_gradcam==1:
-              self.gradCamImpl(self.model, test_loader,)
-
         # Return test loss and accuracy
         return (test_loss, val_acc)
 
@@ -174,7 +183,7 @@ class CfarTrainer:
     out_val_loss = {}
     total_epochs = {}
 
-    def train(self, train_data, valid_data, n_epochs, use_gradcam):
+    def train(self, train_data, valid_data, n_epochs, classes, use_gradcam):
         for epoch in range(1, n_epochs):
             self.prev_val_acc = 0
             self.total_epochs[epoch] = []
@@ -186,6 +195,11 @@ class CfarTrainer:
             summary = dict(epoch=epoch)
             train_loss, train_acc = self.train_epoch(train_data)
             valid_loss, val_acc = self.evaluate(valid_data, use_gradcam)
+            if use_gradcam==1:
+              model_path= self.output_dir+'/{}'.format('model.pth')
+              model_test = torch.load(model_path)
+              self.gradCamImpl(model_test, valid_data, classes)
+
             self.out_train_acc[epoch].append(train_acc)
             self.out_train_loss[epoch].append(train_loss)
             self.out_val_acc[epoch].append(val_acc)
