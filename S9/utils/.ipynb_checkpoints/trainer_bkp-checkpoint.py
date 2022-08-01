@@ -5,16 +5,24 @@ from model.resnet import ResNet18
 import torch.nn.functional as F
 from tqdm import tqdm
 import logging
+
+import matplotlib.pyplot as plt
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
-from pytorch_grad_cam.utils.image import show_cam_on_image, \
-    deprocess_image, \
-    preprocess_image
-from pytorch_grad_cam import GuidedBackpropReLUModel
-import matplotlib.pyplot as plt
+from pytorch_grad_cam.utils.image import show_cam_on_image
 import numpy as np
-import torchvision
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from torchvision.transforms import Compose, Normalize, ToTensor
 import cv2
+
+def preprocess_image(img: np.ndarray, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]) -> torch.Tensor:
+  preprocessing = Compose([
+    ToTensor(),
+    Normalize(mean=mean, std=std)
+  ])
+  # return (lambda x: test_transform(img=np.array(x))['image'])
+  return preprocessing(img.copy()).unsqueeze(0)
 
 
 class CfarTrainer:
@@ -53,6 +61,32 @@ class CfarTrainer:
         self.logger.info('Number of parameters: %i',
                              sum(p.numel() for p in self.model.parameters()))
     
+
+    def gradCam(image_path, train_data):
+        print("\Eval Gradcam\n")
+        dataiter = iter(train_data)
+        images, label = dataiter.next()
+        
+        # for data, target in valid_data:
+            # f, axarr = plt.subplots(2,2)
+            # img = data[0].cpu()
+            # img = img.permute(1, 2, 0)
+            # rgb_img = np.float32(img) / 255
+            # input_tensor = preprocess_image(rgb_img)
+            # img = np.array(img)
+            # axarr[0,0].imshow(img)
+            # img = cv2.cvtColor(img,cv2.COLOR_RGB2BGR)
+            # cv2.imwrite("img.jpg",img)
+            # target_layers = [self.model.layer4[-1]]
+            # with GradCAM(model=self.model,target_layers=target_layers,use_cuda=1) as cam:
+            #     cam.batch_size = 1
+            #     grayscale_cam = cam(input_tensor=input_tensor,targets=None)
+            #     grayscale_cam = grayscale_cam[0, :]
+            #     visualization = show_cam_on_image(rgb_img, grayscale_cam, use_rgb=True)
+            #     cam_image = cv2.cvtColor(visualization, cv2.COLOR_RGB2BGR)
+            #     axarr[0,1].imshow(cam_image)
+            #     cv2.imwrite("cam_img.jpg",cam_image)
+
     def train_epoch(self, train_loader):
         """Train for one epoch"""
         summary = dict()
@@ -86,61 +120,17 @@ class CfarTrainer:
         self.scheduler.step()
         return (train_l, train_a)
 
-
-    def gradCamImpl(self, model, test_loader):
-        target_layers = [model.layer4]
-        dataiter = iter(test_loader)
-        images, labels = dataiter.next()
-        img = torchvision.utils.make_grid(images[0])
-        img = img / 2 + 0.5     # unnormalize
-        npimg = img.numpy()
-        target_img = np.transpose(npimg, (1, 2, 0))
-        plt.imshow(target_img)
-
-        dataiter = iter(test_loader)
-        data, labels = dataiter.next()
-        data, labels = data.to(self.device), labels.to(self.device)
-        
-        input_tensor = data[0].unsqueeze(0)
-
-        # We have to specify the target we want to generate
-        # the Class Activation Maps for.
-        # If targets is None, the highest scoring category (for every member in the batch) will be used.
-        # You can target specific categories by
-        # targets = [ClasclassessifierOutputTarget(0)]
-        targets = None
-
-        # Using the with statement ensures the context is freed, and you can
-        # recreate different CAM objects in a loop.
-        # cam_algorithm = methods[args.method]
-        with GradCAM(model=model,target_layers=target_layers,use_cuda=1) as cam:
-            cam.batch_size = 1
-            grayscale_cam = cam(input_tensor=input_tensor,targets=targets)
-
-            # Here grayscale_cam has only one image in the batch
-            grayscale_cam = grayscale_cam[0, :]
-
-            cam_image = show_cam_on_image(target_img, grayscale_cam, use_rgb=True)
-
-            # cam_image is RGB encoded whereas "cv2.imwrite" requires BGR encoding.
-            cam_image = cv2.cvtColor(cam_image, cv2.COLOR_RGB2BGR)
-            plt.imshow(cam_image)
-
-
-
+    
     @torch.no_grad()
-    def evaluate(self, test_loader, use_gradcam):
+    def evaluate(self, test_loader):
         # global prev_val_acc
         """"Evaluate the model"""
-
         self.model.eval()
-        print("use gradcam or not ",use_gradcam)
-
         test_loss = 0
         correct = 0
         with torch.no_grad():
             for data, target in test_loader:
-                data, target = data.to(self.device), target.to(self.device)
+                data, target = data.to(self.device), target.to(self.device) 
                 output = self.model(data)
                 test_loss += self.loss_func(output, target).item()  # sum up batch loss
                 pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
@@ -162,9 +152,6 @@ class CfarTrainer:
             prev_val_acc = val_acc
             torch.save(self.model, self.output_dir+'/{}'.format('model.pth'))
 
-            if use_gradcam==1:
-              self.gradCamImpl(self.model, test_loader,)
-
         # Return test loss and accuracy
         return (test_loss, val_acc)
 
@@ -185,7 +172,7 @@ class CfarTrainer:
             self.logger.info('Epoch %i', epoch)
             summary = dict(epoch=epoch)
             train_loss, train_acc = self.train_epoch(train_data)
-            valid_loss, val_acc = self.evaluate(valid_data, use_gradcam)
+            valid_loss, val_acc = self.evaluate(valid_data)
             self.out_train_acc[epoch].append(train_acc)
             self.out_train_loss[epoch].append(train_loss)
             self.out_val_acc[epoch].append(val_acc)
@@ -196,8 +183,14 @@ class CfarTrainer:
             self.logger.info('\n')
             print('Epoch: %i, Train Loss: %.3f, Valid Loss: %.3f' % (epoch, train_loss, valid_loss))
             self.logger.info('Epoch: %i, Train Loss: %.3f, Valid Loss: %.3f', epoch, train_loss, valid_loss)
+
+            if use_gradcam==1:
+                model_path = './model.pth'
+                model = torch.load(model_path)
+                self.gradCam(model, train_data)
             
 
+    
 
 def get_trainer(**kwargs):
     return CfarTrainer(**kwargs)
